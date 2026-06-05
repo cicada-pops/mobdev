@@ -3,13 +3,6 @@ package io.github.mobdev.data
 import android.content.Context
 import androidx.core.content.edit
 
-/**
- * Persists the login + password and the current auth token.
- *
- * Storing the password in plain [android.content.SharedPreferences] is not
- * great, but the assignment explicitly allows it ("плохо, но не смертельно").
- * Keeping the token here lets the OkHttp interceptor read it synchronously.
- */
 class CredentialsStore(context: Context) {
 
     private val prefs =

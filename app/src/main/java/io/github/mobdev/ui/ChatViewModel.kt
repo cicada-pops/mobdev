@@ -7,62 +7,86 @@ import io.github.mobdev.data.ChatException
 import io.github.mobdev.data.ChatNetwork
 import io.github.mobdev.data.ChatRepository
 import io.github.mobdev.data.CredentialsStore
+import io.github.mobdev.data.NetworkMonitor
+import io.github.mobdev.data.local.ChatDatabase
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-/**
- * Holds all chat state. Because it is a [androidx.lifecycle.ViewModel] it
- * survives configuration changes, so a rotation never re-fetches anything:
- * the open chat, loaded messages and the open image are all kept here and
- * the UI just re-reads them.
- */
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val credentials = CredentialsStore(application)
-    private val repository = ChatRepository(ChatNetwork(credentials), credentials)
+    private val database = ChatDatabase.get(application)
+    private val repository = ChatRepository(
+        network = ChatNetwork(credentials),
+        credentials = credentials,
+        channelDao = database.channelDao(),
+        messageDao = database.messageDao(),
+        outboxDao = database.outboxDao(),
+    )
+    private val networkMonitor = NetworkMonitor(application)
 
     private val _state = MutableStateFlow(ChatUiState())
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
+    private var channelsJob: Job? = null
+    private var messagesJob: Job? = null
+
     init {
+        observeConnectivity()
         if (repository.hasSavedCredentials) {
-            // Login screen is skipped when credentials were already entered.
-            _state.update { it.copy(phase = Phase.Startup, isAuthenticating = true) }
-            viewModelScope.launch {
-                val name = credentials.username.orEmpty()
-                val password = credentials.password.orEmpty()
-                try {
-                    repository.login(name, password)
-                    _state.update {
-                        it.copy(
-                            phase = Phase.Ready,
-                            username = name,
-                            password = password,
-                            isAuthenticating = false,
-                        )
-                    }
-                    loadChannels()
-                } catch (e: ChatException) {
-                    _state.update {
-                        it.copy(
-                            phase = Phase.Login,
-                            username = name,
-                            password = "",
-                            isAuthenticating = false,
-                            loginError = e.toLoginErrorKind(),
-                        )
-                    }
-                }
-            }
+            val name = credentials.username.orEmpty()
+            _state.update { it.copy(phase = Phase.Ready, username = name) }
+            startObservingChannels()
+            viewModelScope.launch { primeSession(name, credentials.password.orEmpty()) }
         } else {
             _state.update { it.copy(phase = Phase.Login) }
         }
     }
 
-    // ---- Login screen ----------------------------------------------------
+    private suspend fun primeSession(name: String, password: String) {
+        refreshChannelsCatching()
+        try {
+            repository.login(name, password)
+        } catch (e: ChatException) {
+
+            if (e is ChatException.InvalidCredentials) {
+                forceRelogin()
+                return
+            }
+        }
+        flushOutboxCatching()
+    }
+
+    private fun observeConnectivity() {
+        viewModelScope.launch {
+            networkMonitor.isOnline.collect { online ->
+                val wasOnline = _state.value.isOnline
+                _state.update { it.copy(isOnline = online) }
+                if (online && !wasOnline) onReconnected()
+            }
+        }
+    }
+
+    private fun onReconnected() {
+        if (_state.value.phase != Phase.Ready) return
+        viewModelScope.launch {
+            flushOutboxCatching()
+            refreshChannelsCatching()
+            _state.value.selectedChannel?.let { refreshMessages(it) }
+        }
+    }
+
+    private suspend fun refreshChannelsCatching() {
+        try {
+            repository.refreshChannels()
+        } catch (e: ChatException) {
+            if (e is ChatException.Unauthorized) forceRelogin()
+        }
+    }
 
     fun onUsernameChange(value: String) = _state.update { it.copy(username = value) }
 
@@ -86,7 +110,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 _state.update {
                     it.copy(phase = Phase.Ready, username = name, isAuthenticating = false)
                 }
-                loadChannels()
+                startObservingChannels()
+                refreshChannelsCatching()
+                flushOutboxCatching()
             } catch (e: ChatException) {
                 _state.update {
                     it.copy(isAuthenticating = false, loginError = e.toLoginErrorKind())
@@ -95,47 +121,60 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ---- Channels --------------------------------------------------------
-
-    fun loadChannels() {
-        if (_state.value.isLoadingChannels) return
-        _state.update { it.copy(isLoadingChannels = true, channelsError = false) }
-        viewModelScope.launch {
-            try {
-                val channels = repository.loadChannels()
-                _state.update {
-                    it.copy(channels = channels, isLoadingChannels = false)
-                }
-            } catch (e: ChatException) {
-                if (e is ChatException.Unauthorized) {
-                    forceRelogin()
-                } else {
-                    _state.update {
-                        it.copy(isLoadingChannels = false, channelsError = true)
-                    }
-                }
+    private fun startObservingChannels() {
+        if (channelsJob != null) return
+        channelsJob = viewModelScope.launch {
+            repository.observeChannels().collect { channels ->
+                _state.update { it.copy(channels = channels) }
             }
         }
     }
 
-    // ---- Messages --------------------------------------------------------
+    fun refreshChannels() {
+        if (!_state.value.isOnline) return
+        _state.update { it.copy(isRefreshingChannels = true) }
+        viewModelScope.launch {
+            try {
+                repository.refreshChannels()
+            } catch (e: ChatException) {
+                if (e is ChatException.Unauthorized) forceRelogin()
+            } finally {
+                _state.update { it.copy(isRefreshingChannels = false) }
+            }
+        }
+    }
 
     fun selectChannel(channel: String) {
+        val online = _state.value.isOnline
         _state.update {
             it.copy(
                 selectedChannel = channel,
                 messages = emptyList(),
-                isLoadingMessages = true,
+                isRefreshingMessages = online,
                 messagesError = false,
                 isLoadingOlder = false,
                 hasMoreOlder = true,
                 draft = "",
             )
         }
-        viewModelScope.launch { fetchLatest(channel) }
+        observeChannelMessages(channel)
+        if (online) viewModelScope.launch { refreshMessages(channel) }
+    }
+
+    private fun observeChannelMessages(channel: String) {
+        messagesJob?.cancel()
+        val sender = _state.value.username
+        messagesJob = viewModelScope.launch {
+            repository.observeMessages(channel, sender).collect { messages ->
+                if (_state.value.selectedChannel != channel) return@collect
+                _state.update { it.copy(messages = messages) }
+            }
+        }
     }
 
     fun closeChannel() {
+        messagesJob?.cancel()
+        messagesJob = null
         _state.update {
             it.copy(
                 selectedChannel = null,
@@ -149,63 +188,51 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun retryMessages() {
         val channel = _state.value.selectedChannel ?: return
-        _state.update { it.copy(isLoadingMessages = true, messagesError = false) }
-        viewModelScope.launch { fetchLatest(channel) }
+        if (!_state.value.isOnline) return
+        _state.update { it.copy(isRefreshingMessages = true, messagesError = false) }
+        viewModelScope.launch { refreshMessages(channel) }
     }
 
-    private suspend fun fetchLatest(channel: String) {
+    private suspend fun refreshMessages(channel: String) {
         try {
-            val messages = repository.loadLatest(channel)
-            // Ignore a stale response if the user already switched channels.
+            val count = repository.refreshLatest(channel)
             if (_state.value.selectedChannel != channel) return
             _state.update {
-                it.copy(
-                    messages = messages,
-                    isLoadingMessages = false,
-                    hasMoreOlder = messages.size >= PAGE_SIZE,
-                )
+                it.copy(isRefreshingMessages = false, hasMoreOlder = count >= PAGE_SIZE)
             }
         } catch (e: ChatException) {
             if (e is ChatException.Unauthorized) {
                 forceRelogin()
             } else if (_state.value.selectedChannel == channel) {
-                _state.update { it.copy(isLoadingMessages = false, messagesError = true) }
+
+                _state.update {
+                    it.copy(
+                        isRefreshingMessages = false,
+                        messagesError = e !is ChatException.Network,
+                    )
+                }
             }
         }
     }
 
-    /** Loads the previous page; triggered only by an explicit user tap so a
-     *  rotation can never cause a network call. */
     fun loadOlderMessages() {
         val current = _state.value
         val channel = current.selectedChannel ?: return
-        if (current.isLoadingOlder || !current.hasMoreOlder || current.messages.isEmpty()) return
-        val oldestId = current.messages.first().id
+        if (current.isLoadingOlder || !current.hasMoreOlder || !current.isOnline) return
         _state.update { it.copy(isLoadingOlder = true) }
         viewModelScope.launch {
             try {
-                val older = repository.loadOlder(channel, oldestId)
+                val count = repository.loadOlder(channel)
                 if (_state.value.selectedChannel != channel) return@launch
-                _state.update { state ->
-                    val known = state.messages.mapTo(HashSet()) { it.id }
-                    val merged = older.filter { it.id !in known } + state.messages
-                    state.copy(
-                        messages = merged,
-                        isLoadingOlder = false,
-                        hasMoreOlder = older.size >= PAGE_SIZE,
-                    )
+                _state.update {
+                    it.copy(isLoadingOlder = false, hasMoreOlder = count >= PAGE_SIZE)
                 }
             } catch (e: ChatException) {
-                if (e is ChatException.Unauthorized) {
-                    forceRelogin()
-                } else {
-                    _state.update { it.copy(isLoadingOlder = false) }
-                }
+                if (e is ChatException.Unauthorized) forceRelogin()
+                else _state.update { it.copy(isLoadingOlder = false) }
             }
         }
     }
-
-    // ---- Sending ---------------------------------------------------------
 
     fun onDraftChange(value: String) = _state.update { it.copy(draft = value) }
 
@@ -213,47 +240,48 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val current = _state.value
         val channel = current.selectedChannel ?: return
         val text = current.draft.trim()
-        if (text.isEmpty() || current.isSending) return
-        _state.update { it.copy(isSending = true) }
+        if (text.isEmpty()) return
+        _state.update { it.copy(draft = "") }
         viewModelScope.launch {
-            try {
-                repository.send(channel, current.username, text)
-                _state.update { it.copy(draft = "", isSending = false) }
-                if (_state.value.selectedChannel == channel) fetchLatest(channel)
-            } catch (e: ChatException) {
-                if (e is ChatException.Unauthorized) {
-                    forceRelogin()
-                } else {
-                    _state.update { it.copy(isSending = false, messagesError = true) }
-                }
+
+            repository.enqueue(channel, current.username, text, System.currentTimeMillis())
+            if (_state.value.isOnline) {
+                flushOutboxCatching()
+                if (_state.value.selectedChannel == channel) refreshMessages(channel)
             }
         }
     }
 
-    // ---- Image -----------------------------------------------------------
+    private suspend fun flushOutboxCatching() {
+        try {
+            repository.flushOutbox()
+        } catch (e: ChatException) {
+            if (e is ChatException.Unauthorized) forceRelogin()
+        }
+    }
 
     fun openImage(link: String) = _state.update { it.copy(fullscreenImage = link) }
 
     fun closeImage() = _state.update { it.copy(fullscreenImage = null) }
 
-    // ---- Session ---------------------------------------------------------
-
     fun logout() {
+        channelsJob?.cancel(); channelsJob = null
+        messagesJob?.cancel(); messagesJob = null
         repository.logout()
-        _state.value = ChatUiState(phase = Phase.Login)
+        viewModelScope.launch { repository.clearCache() }
+        _state.value = ChatUiState(phase = Phase.Login, isOnline = _state.value.isOnline)
     }
 
-    /** A 401 that survived automatic re-login: restart the login process. */
     private fun forceRelogin() {
+        messagesJob?.cancel(); messagesJob = null
         _state.update {
             it.copy(
                 phase = Phase.Login,
                 password = "",
                 isAuthenticating = false,
-                isLoadingChannels = false,
-                isLoadingMessages = false,
+                isRefreshingChannels = false,
+                isRefreshingMessages = false,
                 isLoadingOlder = false,
-                isSending = false,
                 selectedChannel = null,
                 messages = emptyList(),
                 fullscreenImage = null,

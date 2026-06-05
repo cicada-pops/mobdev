@@ -21,7 +21,6 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import io.github.mobdev.R
 
-/** The full-resolution image (from `/img/`) shown over everything else. */
 @Composable
 fun FullscreenImage(
     imageUrl: String,

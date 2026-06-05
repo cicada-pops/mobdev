@@ -16,16 +16,21 @@
 
     <string name="channels_title">Чаты</string>
     <string name="logout_content_description">Выйти из аккаунта</string>
+    <string name="refresh">Обновить</string>
     <string name="channels_empty">Нет доступных каналов</string>
-    <string name="channels_error">Не удалось загрузить список каналов</string>
+    <string name="channels_empty_offline">Нет сети и нет сохранённых каналов</string>
 
     <string name="select_chat">Выберите чат</string>
     <string name="messages_empty">Сообщений пока нет</string>
+    <string name="messages_empty_offline">Нет сети и нет сохранённых сообщений</string>
     <string name="messages_error">Не удалось загрузить сообщения</string>
     <string name="load_older">Загрузить предыдущие</string>
 
     <string name="message_input_hint">Сообщение</string>
     <string name="send">Отправить</string>
+    <string name="message_pending">Отправляется…</string>
+
+    <string name="offline_banner">Нет сети — показаны сохранённые данные</string>
 
     <string name="open_chats">К списку чатов</string>
     <string name="image_content_description">Изображение</string>

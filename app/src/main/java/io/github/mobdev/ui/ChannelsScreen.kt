@@ -2,7 +2,6 @@ package io.github.mobdev.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -20,7 +20,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -35,7 +34,7 @@ fun ChannelsScreen(
     state: ChatUiState,
     onSelect: (String) -> Unit,
     onLogout: () -> Unit,
-    onRetry: () -> Unit,
+    onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Scaffold(
@@ -44,6 +43,14 @@ fun ChannelsScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.channels_title)) },
                 actions = {
+                    if (state.isOnline) {
+                        IconButton(onClick = onRefresh) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = stringResource(R.string.refresh),
+                            )
+                        }
+                    }
                     IconButton(onClick = onLogout) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ExitToApp,
@@ -54,48 +61,41 @@ fun ChannelsScreen(
             )
         },
     ) { padding ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            when {
-                state.isLoadingChannels && state.channels.isEmpty() -> {
-                    CircularProgressIndicator(Modifier.align(Alignment.Center))
-                }
-
-                state.channelsError && state.channels.isEmpty() -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(24.dp),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Text(stringResource(R.string.channels_error))
-                        TextButton(onClick = onRetry) {
-                            Text(stringResource(R.string.retry))
+            if (!state.isOnline) OfflineBanner()
+            Box(modifier = Modifier.fillMaxSize()) {
+                when {
+                    state.channels.isNotEmpty() -> {
+                        LazyColumn(Modifier.fillMaxSize()) {
+                            items(state.channels, key = { it }) { channel ->
+                                ChannelRow(
+                                    name = channel,
+                                    selected = channel == state.selectedChannel,
+                                    onClick = { onSelect(channel) },
+                                )
+                                HorizontalDivider()
+                            }
                         }
                     }
-                }
 
-                state.channels.isEmpty() -> {
-                    Text(
-                        text = stringResource(R.string.channels_empty),
-                        modifier = Modifier.align(Alignment.Center),
-                    )
-                }
+                    state.isRefreshingChannels -> {
+                        CircularProgressIndicator(Modifier.align(Alignment.Center))
+                    }
 
-                else -> {
-                    LazyColumn(Modifier.fillMaxSize()) {
-                        items(state.channels, key = { it }) { channel ->
-                            ChannelRow(
-                                name = channel,
-                                selected = channel == state.selectedChannel,
-                                onClick = { onSelect(channel) },
-                            )
-                            HorizontalDivider()
-                        }
+                    else -> {
+                        Text(
+                            text = stringResource(
+                                if (state.isOnline) R.string.channels_empty
+                                else R.string.channels_empty_offline
+                            ),
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(24.dp),
+                        )
                     }
                 }
             }

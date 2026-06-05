@@ -52,8 +52,6 @@ private fun ReadyScreen(state: ChatUiState, viewModel: ChatViewModel) {
     val imageOpen = state.fullscreenImage != null
     val chatOpen = state.selectedChannel != null
 
-    // Back: image -> close image; chat open -> close chat (both orientations);
-    // otherwise let the system close the app.
     BackHandler(enabled = imageOpen || chatOpen) {
         when {
             imageOpen -> viewModel.closeImage()
@@ -68,7 +66,7 @@ private fun ReadyScreen(state: ChatUiState, viewModel: ChatViewModel) {
                     state = state,
                     onSelect = viewModel::selectChannel,
                     onLogout = viewModel::logout,
-                    onRetry = viewModel::loadChannels,
+                    onRefresh = viewModel::refreshChannels,
                     modifier = Modifier.weight(1f),
                 )
                 VerticalDivider()
@@ -92,7 +90,7 @@ private fun ReadyScreen(state: ChatUiState, viewModel: ChatViewModel) {
                     state = state,
                     onSelect = viewModel::selectChannel,
                     onLogout = viewModel::logout,
-                    onRetry = viewModel::loadChannels,
+                    onRefresh = viewModel::refreshChannels,
                 )
             }
         }

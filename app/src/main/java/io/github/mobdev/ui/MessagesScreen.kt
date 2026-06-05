@@ -40,7 +40,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import io.github.mobdev.R
-import io.github.mobdev.data.Message
+import io.github.mobdev.data.ChatMessage
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -83,12 +83,20 @@ fun MessagesScreen(
                 .padding(padding)
                 .imePadding(),
         ) {
+            if (!state.isOnline) OfflineBanner()
             Box(modifier = Modifier.weight(1f)) {
                 when {
-                    state.isLoadingMessages && state.messages.isEmpty() ->
+                    state.messages.isNotEmpty() -> MessageList(
+                        state = state,
+                        thumbUrl = thumbUrl,
+                        onOpenImage = onOpenImage,
+                        onLoadOlder = onLoadOlder,
+                    )
+
+                    state.isRefreshingMessages ->
                         CircularProgressIndicator(Modifier.align(Alignment.Center))
 
-                    state.messagesError && state.messages.isEmpty() ->
+                    state.messagesError ->
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -102,24 +110,18 @@ fun MessagesScreen(
                             }
                         }
 
-                    state.messages.isEmpty() ->
-                        Text(
-                            text = stringResource(R.string.messages_empty),
-                            modifier = Modifier.align(Alignment.Center),
-                        )
-
-                    else -> MessageList(
-                        state = state,
-                        thumbUrl = thumbUrl,
-                        onOpenImage = onOpenImage,
-                        onLoadOlder = onLoadOlder,
+                    else -> Text(
+                        text = stringResource(
+                            if (state.isOnline) R.string.messages_empty
+                            else R.string.messages_empty_offline
+                        ),
+                        modifier = Modifier.align(Alignment.Center),
                     )
                 }
             }
 
             MessageInput(
                 draft = state.draft,
-                isSending = state.isSending,
                 onDraftChange = onDraftChange,
                 onSend = onSend,
             )
@@ -134,15 +136,14 @@ private fun MessageList(
     onOpenImage: (String) -> Unit,
     onLoadOlder: () -> Unit,
 ) {
-    // Newest-first + reverseLayout keeps the list pinned to the newest message
-    // and survives rotation via the saved LazyListState — no network needed.
+
     val ordered = state.messages.asReversed()
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         reverseLayout = true,
         contentPadding = PaddingValues(8.dp),
     ) {
-        items(ordered, key = { it.id }) { message ->
+        items(ordered, key = { it.key }) { message ->
             MessageBubble(
                 message = message,
                 isOwn = message.from == state.username,
@@ -150,7 +151,8 @@ private fun MessageList(
                 onOpenImage = onOpenImage,
             )
         }
-        if (state.hasMoreOlder) {
+
+        if (state.hasMoreOlder && state.isOnline) {
             item(key = "load_older") {
                 Box(
                     modifier = Modifier
@@ -173,7 +175,7 @@ private fun MessageList(
 
 @Composable
 private fun MessageBubble(
-    message: Message,
+    message: ChatMessage,
     isOwn: Boolean,
     thumbUrl: (String) -> String,
     onOpenImage: (String) -> Unit,
@@ -200,25 +202,31 @@ private fun MessageBubble(
                 .widthIn(max = 280.dp)
                 .padding(top = 2.dp),
         ) {
-            val image = message.data.image
-            val text = message.data.text
             when {
-                image != null -> AsyncImage(
-                    model = thumbUrl(image.link),
+                message.imageLink != null -> AsyncImage(
+                    model = thumbUrl(message.imageLink),
                     contentDescription = stringResource(R.string.image_content_description),
                     contentScale = ContentScale.Fit,
                     modifier = Modifier
                         .size(220.dp)
-                        .clickable { onOpenImage(image.link) }
+                        .clickable { onOpenImage(message.imageLink) }
                         .padding(4.dp),
                 )
 
-                text != null -> Text(
-                    text = text.text,
+                message.text != null -> Text(
+                    text = message.text,
                     style = MaterialTheme.typography.bodyLarge,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                 )
             }
+        }
+        if (message.pending) {
+            Text(
+                text = stringResource(R.string.message_pending),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp),
+            )
         }
     }
 }
@@ -226,7 +234,6 @@ private fun MessageBubble(
 @Composable
 private fun MessageInput(
     draft: String,
-    isSending: Boolean,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
 ) {
@@ -246,16 +253,12 @@ private fun MessageInput(
         Spacer(Modifier.width(8.dp))
         IconButton(
             onClick = onSend,
-            enabled = draft.isNotBlank() && !isSending,
+            enabled = draft.isNotBlank(),
         ) {
-            if (isSending) {
-                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-            } else {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Send,
-                    contentDescription = stringResource(R.string.send),
-                )
-            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.Send,
+                contentDescription = stringResource(R.string.send),
+            )
         }
     }
 }

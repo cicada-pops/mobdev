@@ -15,15 +15,10 @@ import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFact
 import retrofit2.Retrofit
 import java.io.IOException
 
-/** Header that carries the auth token in both directions. */
 const val AUTH_TOKEN_HEADER = "X-Auth-Token"
 
 private const val BASE_URL = "https://faerytea.name/"
 
-/**
- * Owns the HTTP stack: OkHttp (token injection + transparent re-login on 401)
- * and Retrofit wired with kotlinx.serialization.
- */
 class ChatNetwork(credentials: CredentialsStore) {
 
     private val json = Json {
@@ -32,9 +27,6 @@ class ChatNetwork(credentials: CredentialsStore) {
         encodeDefaults = false
     }
 
-    // BASIC writes one line per request and one per response to Logcat under
-    // tag "okhttp.OkHttpClient" — enough to prove that rotation never triggers
-    // a new call while explicit user actions do.
     private val logging = HttpLoggingInterceptor().apply {
         level = HttpLoggingInterceptor.Level.BASIC
     }
@@ -56,7 +48,6 @@ class ChatNetwork(credentials: CredentialsStore) {
     fun imageUrl(link: String): String = BASE_URL + "img/" + link
 }
 
-/** Attaches the current token to every outgoing request. */
 private class AuthInterceptor(
     private val credentials: CredentialsStore,
 ) : Interceptor {
@@ -71,12 +62,6 @@ private class AuthInterceptor(
     }
 }
 
-/**
- * On a 401, transparently logs in again with the stored credentials and
- * retries the request once. If there are no stored credentials or the
- * re-login fails, the 401 is allowed to propagate so the UI can show the
- * login screen again.
- */
 private class ReloginAuthenticator(
     private val credentials: CredentialsStore,
     private val json: Json,
@@ -93,7 +78,7 @@ private class ReloginAuthenticator(
             val triedToken = response.request.header(AUTH_TOKEN_HEADER)
             val current = credentials.token
             if (current != null && current != triedToken) {
-                // Another request already refreshed the token; reuse it.
+
                 current
             } else {
                 login(name, password)?.also { credentials.token = it }
@@ -117,8 +102,7 @@ private class ReloginAuthenticator(
                 if (!result.isSuccessful) {
                     null
                 } else {
-                    // The live server returns the token in the response body
-                    // (text/plain); the X-Auth-Token header is only a fallback.
+
                     result.header(AUTH_TOKEN_HEADER)
                         ?: result.body?.string()?.trim()?.takeIf { it.isNotEmpty() }
                 }
