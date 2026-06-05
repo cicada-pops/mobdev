@@ -8,6 +8,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.Route
+import okhttp3.logging.HttpLoggingInterceptor
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
@@ -31,8 +32,16 @@ class ChatNetwork(credentials: CredentialsStore) {
         encodeDefaults = false
     }
 
+    // BASIC writes one line per request and one per response to Logcat under
+    // tag "okhttp.OkHttpClient" — enough to prove that rotation never triggers
+    // a new call while explicit user actions do.
+    private val logging = HttpLoggingInterceptor().apply {
+        level = HttpLoggingInterceptor.Level.BASIC
+    }
+
     private val client = OkHttpClient.Builder()
         .addInterceptor(AuthInterceptor(credentials))
+        .addInterceptor(logging)
         .authenticator(ReloginAuthenticator(credentials, json))
         .build()
 
